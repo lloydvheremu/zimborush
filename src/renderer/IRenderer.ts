@@ -1,4 +1,4 @@
-import type { Camera } from 'three';
+import type { Camera, Scene } from 'three';
 
 /**
  * Opaque quality-tier label. The concrete tier set is decided outside this
@@ -27,6 +27,13 @@ export interface RenderStats {
 export interface IRenderer {
   /** Create the context, apply the style's clear colour, size the buffer. Throws on double init. */
   init(canvas: HTMLCanvasElement, style: StyleConfig, tier: TierId): void;
+  /**
+   * Set the scene to draw. The renderer starts with a throwaway placeholder
+   * scene that exists only to prove the pipeline works; the world composition
+   * root replaces it here once the real scene is assembled. Passing a scene
+   * disposes the placeholder. Must be called after `init`.
+   */
+  setScene(scene: Scene): void;
   /** Apply a style delta to live rendering state. */
   realize(diff: unknown): void;
   /** Draw one frame. Must not allocate. */

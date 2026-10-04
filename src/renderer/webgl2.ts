@@ -74,6 +74,20 @@ export class WebGL2Renderer implements IRenderer {
     );
   }
 
+  /**
+   * Replace the placeholder scene with the real one. The placeholder exists
+   * only to prove the pipeline in step 1; owning it here would keep the world
+   * invisible, so the composition root hands over the assembled scene instead.
+   * Idempotent: disposing the placeholder twice is safe.
+   */
+  setScene(scene: Scene): void {
+    if (this.scene === scene) {
+      return;
+    }
+    this.disposePlaceholder();
+    this.scene = scene;
+  }
+
   realize(_diff: unknown): void {
     throw new Error('WebGL2Renderer.realize: not implemented until step 3');
   }
@@ -125,8 +139,11 @@ export class WebGL2Renderer implements IRenderer {
     return this.statsObject;
   }
 
-  dispose(): void {
-    // Idempotent: safe before init and after a previous dispose.
+  /**
+   * Release the step-1 placeholder only. Split out of `dispose()` so `setScene`
+   * can drop the placeholder without tearing down the live renderer.
+   */
+  private disposePlaceholder(): void {
     this.placeholderMesh = undefined;
     if (this.placeholderGeometry !== undefined) {
       this.placeholderGeometry.dispose();
@@ -137,6 +154,11 @@ export class WebGL2Renderer implements IRenderer {
       this.placeholderMaterial = undefined;
     }
     this.scene = undefined;
+  }
+
+  dispose(): void {
+    // Idempotent: safe before init and after a previous dispose.
+    this.disposePlaceholder();
     if (this.renderer !== undefined) {
       this.renderer.dispose();
       this.renderer = undefined;

@@ -5,8 +5,18 @@ import { FixedLoop, SIM_HZ } from './core/loop';
 import { QualityLadder } from './core/quality';
 import { Telemetry } from './core/telemetry';
 import type { QualityState } from './core/quality';
+import { SceneGraph } from './renderer/sceneGraph';
 import { WebGL2Renderer } from './renderer/webgl2';
 import type { TierId } from './renderer/IRenderer';
+import { createHeightfield } from './game/track/heightfield';
+import { createRoad } from './game/track/road';
+import { buildTerrainGeometry } from './game/track/terrain';
+import { buildRoadGeometry } from './game/track/roadMesh';
+import { buildDistantHills } from './game/track/hills';
+import { createSky } from './game/sky';
+import { StyleColorSource, completeStyle } from './styles/styleConfig';
+import { compose, emptyProviders } from './world/compose';
+import { WorldView } from './world/view';
 
 /**
  * Opaque tier label passed to the renderer. "default" is a placeholder —
@@ -18,6 +28,19 @@ const FOV_DEG = 70;
 const NEAR = 0.1;
 const FAR = 500;
 
+/** World seed. Fixed so tracks and benchmarks are reproducible (design §3). */
+const WORLD_SEED = 2026;
+
+/** Camera framing for the step-3 look. */
+const CAM = {
+  /** Height above the road surface at the start of the lap. */
+  eyeHeightM: 1.35,
+  /** Distance ahead along the road to look at. */
+  lookAheadM: 26,
+  /** Extra height of the look-ahead point. */
+  lookHeightM: 0.9,
+} as const;
+
 /** URL switches. All optional; the game runs identically without any of them. */
 interface BootOptions {
   /** Busy-wait this many ms per rendered frame, to force the ladder down. */
@@ -28,6 +51,13 @@ interface BootOptions {
   forceStage: StageForceId | null;
   /** Show the telemetry overlay from the first frame. */
   showTelemetry: boolean;
+  /**
+   * Where the camera sits. 'start' = at the lap origin looking along the road
+   * (the default). 'overview' = pulled back, to judge the whole scene.
+   */
+  view: 'start' | 'overview';
+  /** Override the world seed, for comparing track seeds side by side. */
+  seed: number;
 }
 
 type StageForceId = 0 | 0.5 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -53,11 +83,14 @@ function parseStage(raw: string | null): StageForceId | null {
 
 function readBootOptions(): BootOptions {
   const params = new URLSearchParams(window.location.search);
+  const view = params.get('view') === 'overview' ? 'overview' : 'start';
   return {
     burnMs: parseNumber(params.get('burn'), 0),
     noSettle: params.get('ladder') === 'nosettle',
     forceStage: parseStage(params.get('stage')),
     showTelemetry: params.get('telemetry') === '1',
+    view,
+    seed: parseNumber(params.get('seed'), WORLD_SEED),
   };
 }
 
@@ -107,6 +140,11 @@ async function start(): Promise<void> {
   const eager = await eagerPromise;
   const cadence = await cadencePromise;
 
+  // Complete the style: the JSON carries id + clearColor today; the rest of the
+  // config (palette, fog, lights) arrives here with documented defaults.
+  const style = completeStyle(eager.style as never);
+  const colors = new StyleColorSource(style);
+
   console.log(
     `[ZimboRush] cadence R=${cadence.rateHz} Hz raw=${cadence.rawHz.toFixed(2)} ` +
       `snapped=${cadence.snapped} samples=${cadence.samples} tag=${cadence.tag} ` +
@@ -114,7 +152,42 @@ async function start(): Promise<void> {
   );
 
   const renderer = new WebGL2Renderer();
-  renderer.init(canvas, eager.style, TIER);
+  renderer.init(canvas, style, TIER);
+
+  // Scene assembly through the frozen seams. Every object attaches to a named
+  // slot, so draw order is fixed by the slot list rather than by merge order.
+  const graph = new SceneGraph();
+  const sky = createSky(graph, style);
+
+  const providers = emptyProviders();
+  providers.terrain = createHeightfield(options.seed);
+  providers.spline = createRoad(options.seed);
+  providers.colors = colors;
+  providers.terrainGeometry = buildTerrainGeometry(providers.terrain, colors, {
+    x: style.sun.azimuthDeg !== undefined ? 0.42 : 0.42,
+    y: 0.62,
+    z: 0.55,
+  }).geometry;
+  const builtRoad = buildRoadGeometry(options.seed, colors);
+  providers.roadGeometry = builtRoad.geometry;
+  providers.roadTintCount = builtRoad.tintCount;
+  const builtHills = buildDistantHills(colors, { seed: options.seed });
+  providers.hillGeometry = builtHills.geometry;
+
+  const world = compose(providers);
+  const view = new WorldView(graph, world, builtRoad.tintCount, builtHills.tintCount);
+  view.attach();
+
+  // Hand the assembled scene to the renderer. Until this call the renderer
+  // draws its step-1 placeholder, which is why the world stayed invisible.
+  renderer.setScene(graph.root);
+
+  const renderStats = view.totals;
+  console.log(
+    `[ZimboRush] world seed=${options.seed} road=${world.spline.lengthM.toFixed(1)}m ` +
+      `tris=${renderStats.triangles} meshes=${renderStats.meshes} ` +
+      `skyTris=${sky.stats.triangles} skyDraws=${sky.stats.drawCalls} lights=${sky.stats.lightCount}`,
+  );
 
   const camera = new PerspectiveCamera(
     FOV_DEG,
@@ -122,8 +195,29 @@ async function start(): Promise<void> {
     NEAR,
     FAR,
   );
-  camera.position.set(0, 2.3, 6);
-  camera.lookAt(0, 1.15, 0);
+
+  // Camera placement: on the road at the lap origin, looking along the curve.
+  // This is the step-3 framing; the FP rig replaces it at step 5.
+  const placeCamera = (): void => {
+    if (options.view === 'overview') {
+      // Pulled back and up, still looking at the road start.
+      const p = { x: 0, y: 0, z: 0 };
+      world.spline.pointAt(0, p);
+      const ground = world.terrain.heightAt(p.x, p.z);
+      camera.position.set(p.x + 60, ground + 55, p.z + 60);
+      camera.lookAt(p.x, ground, p.z);
+      return;
+    }
+    const start = { x: 0, y: 0, z: 0 };
+    const ahead = { x: 0, y: 0, z: 0 };
+    world.spline.pointAt(0, start);
+    world.spline.pointAt(CAM.lookAheadM, ahead);
+    const eye = world.terrain.heightAt(start.x, start.z) + CAM.eyeHeightM;
+    const target = world.terrain.heightAt(ahead.x, ahead.z) + CAM.lookHeightM;
+    camera.position.set(start.x, eye, start.z);
+    camera.lookAt(ahead.x, target, ahead.z);
+  };
+  placeCamera();
 
   // Quality ladder. Dust and MSAA are inert in this step (no dust sprites, and
   // setMsaa is a step-4 stub), so both start disabled; the stage machine still
@@ -230,7 +324,7 @@ async function start(): Promise<void> {
   console.log(
     `[ZimboRush] loop started sim=${SIM_HZ}Hz burn=${options.burnMs}ms ` +
       `ladder=${options.noSettle ? 'nosettle' : 'normal'} ` +
-      `stage=${options.forceStage === null ? '0' : String(options.forceStage)}`,
+      `stage=${options.forceStage === null ? '0' : String(options.forceStage)} view=${options.view}`,
   );
 }
 
