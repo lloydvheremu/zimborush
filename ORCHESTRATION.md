@@ -33,17 +33,17 @@ Legend: ✅ done · 🔄 in progress · ⏳ not started · 🔒 blocked · ❌ a
 | 17 | Rival rider (spline-following, curvature speed, rubber-band) | §14.7 | 5 | 执行者 | ✅ |
 | 18 | Instanced prop scatter + baked prop shadow data | §14.8 | 5 | 执行者 | ✅ |
 | 19 | Dust sprites + blob shadows | §14.7 | 5 | 执行者 | ✅ |
+| 19b | Wire rival / scatter / dust / blob shadows into the scene (§5.1) | §14.7-8 | 6 | orchestrator | ✅ |
 | 20 | Bench harness 3-run median on the fly path | §14.9 | — | ⏳ |
+| 20b | Apply baked prop-shadow discs to terrain vertex colours (§5.2) | §14.8 | — | ⏳ |
 | 21 | Streaming test (a style module loading post-boot) | §14.11 | — | ⏳ |
-| 22 | Size gate as CI check (compressed / zip / raw) | §14.11 | — | ⏳ |
+| 22 | Size gate as a CI check (compressed / zip / raw) | §14.11 | — | ⏳ |
 | 23 | 20-min soak on real hardware | §14.11 | — | 🔒 needs devices |
 | 24 | Step 3 visual approval: facet scale + palette vs `3-low-poly.jpeg` | §14.3 | — | 🔒 owner |
 | 25 | Touch input (auto-throttle, screen halves) | §11 | — | ⏳ ergonomics UNVERIFIED |
 | 26 | WebGPU adapter | deferred | — | ⏳ settled as never in initial download |
 
-**Not wired into the scene yet:** the scatter (`props.ts`, `shadows.ts`), dust and blob
-shadows (`fx/`) and the rival (`rival/`) are merged and typecheck clean, but `main.ts`
-does not instantiate them. Wiring them is the next orchestrator task (see §5).
+**Everything shipped so far is wired into the scene.** Nothing is merged-but-unused.
 
 ---
 
@@ -112,6 +112,7 @@ Every merge was gated on the orchestrator re-running checks, never on an executo
 | 4 | 14 bike | off-road penalty confirmed in-scene: HUD 30 km/h = the 8.4 m/s off-road cap |
 | 4 | 15 audio | 1 file, no binary media, gesture-gated |
 | 5 | 17/18/19 | all three tsc clean; branches byte-verified before merge |
+| 6 | 19b actors wired | scene totals **34,346 tris** vs 45,000 ceiling (31% headroom); **14 draw calls** vs 15 budget; 190 instances, 190 shadow discs |
 
 ### Bugs found by measuring, not by trusting logs
 
@@ -125,19 +126,54 @@ Every merge was gated on the orchestrator re-running checks, never on an executo
    darkening the whole frame. Replaced with `MeshBasicMaterial({ map })`.
 5. **Cadence probe hung on a hidden tab** — the duration cap sat after the visibility
    early-return, so `await probeCadence()` never resolved and boot never completed.
+6. **Scene-graph duplicate guard fired on the rival** — the mesh was named `rival` and
+   attached to the slot named `rival`, so boot failed loudly. Renamed the mesh to
+   `rivalMesh`. The guard converting a name collision into a boot failure is the
+   intended behaviour, not a defect in it.
 
 ---
 
 ## 5. Next actions (in order)
 
-1. **Wire the merged-but-unused modules into `main.ts`** — rival, scatter, dust, blob
-   shadows. Needed before the step-3 visual gate can be judged, since the reference
-   image shows a rival and props.
-2. **Baked prop shadows onto terrain vertex colours** (`shadows.ts` returns the discs;
-   `terrain.ts` owns the writable colour buffer).
-3. **Bench harness** (§14.9): 5 s warmup, 60 s window, 3-run median, JSON log line.
-4. **Step 3 visual gate** — owner approval of facet scale and palette vs the reference.
-5. **Steps 11/22:** size gate as a CI check, streaming test, then the soak on real devices.
+1. **Baked prop shadows onto terrain vertex colours.** `shadows.ts` returns the discs
+   (`bakePropShadows`) and `ActorsView` already holds them (190 discs from this scatter),
+   but the terrain colour buffer is owned by `terrain.ts` and nothing applies them yet.
+2. **Bench harness** (§14.9): 5 s warmup, 60 s window, 3-run median, JSON log line
+   `{style, backend, R, snapped, tag, avg ft, p95, worst, draws, tris, transfer, heap}`.
+3. **Step 3 visual gate** — owner approval of facet scale and palette vs
+   `3-low-poly.jpeg`. This is a judgement call and cannot be automated.
+4. **Size gate as a CI check** (three metrics), then a streaming test.
+5. **20-min soak** — blocked on real test devices (deferred by the owner).
+
+### Current scene state (measured, `e7d9af8`)
+
+| Metric | Value | Budget | Source |
+|---|---|---|---|
+| Triangles | **34,346** | 45,000 ceiling / 50,000 phone cap | §5 |
+| Draw calls | **14** | 15 budget / 25 cap | §5 |
+| Dist size | 583.8 KB raw / 152.7 KB gzip / 126.5 KB brotli | 5–8 MB initial | §2 |
+| Prop instances | 190 (120 trees + 70 rocks) | ~190 | §5 |
+| Lights | 2 | ≤ 3 | settled |
+
+Breakdown: sky 848 + world 27,344 (terrain 18,432 + hills 4,992 + road 3,920) +
+rival 228 + props 5,898 + blob 4 + dust 24.
+
+### Verification commands in use
+
+```bash
+npx tsc --noEmit          # must print nothing, exit 0
+npm run build             # tsc + vite build
+npm run size              # raw / gzip / brotli / zip report
+```
+
+Headless behavioural checks (orchestrator-only, not committed): Vite dev server +
+Chrome via CDP, using `?fly=1`, `?auto=1`, `?msaa=N`, `?telemetry=1`, `?burn=N`,
+`?ladder=nosettle`, `?stage=N`, `?view=overview`, `?seed=N`.
+
+**Known environment limits:** verification runs on software rendering (SwiftShader),
+so frame-rate numbers are not performance evidence. Node cannot import the source
+directly (extensionless imports are bundler-resolved), so any harness must be served
+by Vite — a plain `node script.mjs` will fail with `ERR_MODULE_NOT_FOUND`.
 
 ---
 
@@ -166,3 +202,4 @@ write target.
 | 2026-10-04 | Waves 1–2 merged (6 scene modules, 10/10 integrated verification). |
 | 2026-10-04 | Step 3 live: scene renders. Steps 4–10 merged (MSAA, fly rig, bike, audio). |
 | 2026-10-04 | Wave 5 merged (rival, scatter, fx). Steps 20–23 remain open; soak blocked on hardware. |
+| 2026-10-04 | Actions 1 done: actors wired into the scene; scene now 34,346 tris / 14 draws. All 11 task branches merged; worktrees removed, branches kept. Remaining: terrain shadow bake, bench harness, owner visual gate, CI size gate, soak. |
