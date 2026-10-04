@@ -54,7 +54,20 @@ export interface ITerrainSource {
 export interface ISplineSource {
   /** Total arc length in metres. */
   readonly lengthM: number;
-  /** Position at arc length `s` metres, written into `out`. */
+  /**
+   * Position at arc length `s` metres, written into `out`.
+   *
+   * SEMANTIC (frozen): this is the PLAN-VIEW centreline. `y` is 0 and is NOT
+   * the ground height. Consumers that need a world-space height (the
+   * fly-through camera, the rival rider, the road mesh) must add the terrain
+   * height themselves:
+   *
+   *   const p = spline.pointAt(s, out);
+   *   p.y = terrain.heightAt(p.x, p.z) + eyeHeightM;
+   *
+   * Keeping the curve plan-view means the road and the terrain can be tuned
+   * independently without re-baking each other (task 8 drapes the ribbon).
+   */
   pointAt(s: number, out: Vec3Mut): Vec3Mut;
   /** Unit tangent at arc length `s`, written into `out`. */
   tangentAt(s: number, out: Vec3Mut): Vec3Mut;
