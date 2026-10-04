@@ -14,9 +14,17 @@ import { buildTerrainGeometry } from './game/track/terrain';
 import { buildRoadGeometry } from './game/track/roadMesh';
 import { buildDistantHills } from './game/track/hills';
 import { createSky } from './game/sky';
+import { createFlyRig } from './game/bench/scripted';
+import { createBikePhysics } from './game/bike/physics';
+import { createPose, NEUTRAL_INPUT } from './game/bike/state';
+import type { BikeInput, InterpolatedPose } from './game/bike/state';
+import type { WorldParts } from './world/contracts';
+import { createEngineAudio } from './audio/engine';
+import { KeyboardInput } from './game/input/keyboard';
 import { StyleColorSource, completeStyle } from './styles/styleConfig';
 import { compose, emptyProviders } from './world/compose';
 import { WorldView } from './world/view';
+import { RiderHud } from './game/hud/speed';
 
 /**
  * Opaque tier label passed to the renderer. "default" is a placeholder —
@@ -60,6 +68,15 @@ interface BootOptions {
   seed: number;
   /** Multisample count override; -1 keeps the style's value (design doc §8). */
   msaa: number;
+  /** Drive the deterministic fly-through instead of the playable bike (§12). */
+  fly: boolean;
+  /** Enable keyboard input, or run hands-off (auto-throttle). */
+  play: boolean;
+  /**
+   * Hold full throttle with no steering. Used to verify the ride and camera
+   * without a keyboard, and as a repeatable input for bench runs.
+   */
+  auto: boolean;
 }
 
 type StageForceId = 0 | 0.5 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -94,6 +111,9 @@ function readBootOptions(): BootOptions {
     view,
     seed: parseNumber(params.get('seed'), WORLD_SEED),
     msaa: params.get('msaa') === null ? -1 : parseNumber(params.get('msaa'), -1),
+    fly: params.get('fly') === '1',
+    play: params.get('play') !== '0',
+    auto: params.get('auto') === '1',
   };
 }
 
@@ -121,6 +141,39 @@ function ensureWebGL2OrStop(): boolean {
   }
   return true;
 }
+
+/**
+ * First-person camera rig on an interpolated bike pose (design doc §11): eye
+ * above the bars, looking along the heading, with roll from lean. Writes into
+ * the camera in place — no allocation.
+ */
+function placeBikeCamera(
+  camera: PerspectiveCamera,
+  pose: InterpolatedPose,
+  world: WorldParts,
+): void {
+  const ground = world.terrain.heightAt(pose.x, pose.z);
+  camera.position.set(pose.x, ground + CAM.eyeHeightM, pose.z);
+  // Look along the heading. Heading is a yaw about Y; forward is (sin, 0, cos).
+  const fx = Math.sin(pose.heading);
+  const fz = Math.cos(pose.heading);
+  const aheadGround = world.terrain.heightAt(pose.x + fx * CAM.lookAheadM, pose.z + fz * CAM.lookAheadM);
+  camera.lookAt(
+    pose.x + fx * CAM.lookAheadM,
+    aheadGround + CAM.lookHeightM,
+    pose.z + fz * CAM.lookAheadM,
+  );
+  // Lean into turns: roll is a fraction of lean, capped so it never reads as
+  // falling over. Applied about the local forward axis via rotation.z in the
+  // camera's own space after lookAt.
+  const roll = Math.max(-MAX_CAM_ROLL_RAD, Math.min(MAX_CAM_ROLL_RAD, pose.lean * CAM_ROLL_SCALE));
+  camera.rotateZ(roll);
+}
+
+/** Fraction of bike lean carried into camera roll (design doc §11). */
+const CAM_ROLL_SCALE = 0.35;
+/** Cap on camera roll, ~6 degrees (design doc §11). */
+const MAX_CAM_ROLL_RAD = (6 * Math.PI) / 180;
 
 /** Mutable per-frame scratch. One instance, so the frame path allocates nothing. */
 interface FrameContext {
@@ -198,6 +251,41 @@ async function start(): Promise<void> {
   // Hand the assembled scene to the renderer. Until this call the renderer
   // draws its step-1 placeholder, which is why the world stayed invisible.
   renderer.setScene(graph.root);
+
+  // --- Simulation: bike physics (step 5/6) or the deterministic fly-through ---
+  const input = new KeyboardInput();
+  if (options.play && !options.fly) {
+    input.attach();
+  }
+  if (options.auto) {
+    input.setAutoThrottle(true);
+  }
+  const bike = createBikePhysics(world.terrain, world.spline, {});
+  const pose = createPose();
+  // Empty prop list is valid until scatter arrives at step 8: the list is a
+  // generator whose first radius of 0 terminates it.
+  const noProps = { propAt: () => 0 };
+
+  const fly = createFlyRig(world.spline, world.terrain, {});
+  const hud = new RiderHud();
+  hud.mount();
+  const audio = createEngineAudio();
+  if (options.play && !options.fly) {
+    // Audio is gesture-gated: browsers refuse an AudioContext without one.
+    const resume = (): void => {
+      audio.start();
+      window.removeEventListener('pointerdown', resume);
+      window.removeEventListener('keydown', resume);
+    };
+    window.addEventListener('pointerdown', resume);
+    window.addEventListener('keydown', resume);
+  }
+
+  console.log(
+    `[ZimboRush] sim=${options.fly ? 'fly-through' : 'bike'} ` +
+      `flySpeed=${fly.speedMps.toFixed(1)}m/s loop=${fly.loopSeconds}s ` +
+      `rideHeight=${bike.state().y.toFixed(2)}m props=0`,
+  );
 
   const renderStats = view.totals;
   console.log(
@@ -286,10 +374,17 @@ async function start(): Promise<void> {
   // loop still runs it at exactly SIM_HZ and renders with an interpolation
   // factor, which is what step 5 will consume.
   const loop = new FixedLoop();
+  // Elapsed simulated seconds. Advanced only inside step(), never in render(),
+  // so the fly-through stays a pure function of simulation time.
+  let simSeconds = 0;
   loop.start({
-    step: (_dt: number): void => {
-      // The simulation body arrives at step 5 (bike, rival, camera rig). The
-      // loop already calls this at exactly SIM_HZ so the timing contract is real.
+    step: (dt: number): void => {
+      simSeconds += dt;
+      if (options.fly) {
+        return; // the fly rig is sampled in render(), from simSeconds
+      }
+      const riderInput: BikeInput = options.play ? input.update(dt) : NEUTRAL_INPUT;
+      bike.step(dt, riderInput, noProps);
     },
     render: (alpha: number, frameDtMs: number): void => {
       // ?burn=N — busy-wait to force the ladder down deterministically.
@@ -300,6 +395,17 @@ async function start(): Promise<void> {
         }
       }
 
+      if (options.fly) {
+        fly.update(camera, simSeconds);
+      } else {
+        // Interpolated render pose between the previous and current sim states
+        // (design doc §8): smooth on any display rate, correct at half-rate.
+        bike.interpolate(alpha, pose);
+        placeBikeCamera(camera, pose, world);
+        hud.frame(pose.speed);
+        audio.setSpeed(pose.speed);
+      }
+
       renderer.render(camera);
 
       const nowMs = performance.now();
@@ -308,7 +414,6 @@ async function start(): Promise<void> {
         applyQuality(ladder.current);
       }
       telemetry.frame(frameDtMs, nowMs);
-      void alpha; // consumed by the camera/bike rig at step 5
     },
   });
 
