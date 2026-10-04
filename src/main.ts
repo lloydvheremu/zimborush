@@ -19,11 +19,25 @@ import { createBikePhysics } from './game/bike/physics';
 import { createPose, NEUTRAL_INPUT } from './game/bike/state';
 import type { BikeInput, InterpolatedPose } from './game/bike/state';
 import type { WorldParts } from './world/contracts';
+import type { Mesh } from 'three';
+
+/** The rival mesh from its slot, resolved once at boot. */
+function rivalMeshOf(graph: SceneGraph): Mesh | null {
+  const kids = graph.childrenOf('rival');
+  for (let i = 0; i < kids.length; i++) {
+    const k = kids[i];
+    if ((k as Mesh).isMesh === true) {
+      return k as Mesh;
+    }
+  }
+  return null;
+}
 import { createEngineAudio } from './audio/engine';
 import { KeyboardInput } from './game/input/keyboard';
 import { StyleColorSource, completeStyle } from './styles/styleConfig';
 import { compose, emptyProviders } from './world/compose';
 import { WorldView } from './world/view';
+import { ActorsView } from './world/actors';
 import { RiderHud } from './game/hud/speed';
 
 /**
@@ -248,6 +262,12 @@ async function start(): Promise<void> {
   const view = new WorldView(graph, world, builtRoad.tintCount, builtHills.tintCount);
   view.attach();
 
+  // Actors: rival, scattered props, blob shadows, dust (steps 7-8).
+  const actors = new ActorsView(graph, world.terrain, world.spline, colors, options.seed);
+  actors.attach({ dust: true });
+  // The rival mesh is looked up once, not per frame.
+  const rivalMesh = rivalMeshOf(graph);
+
   // Hand the assembled scene to the renderer. Until this call the renderer
   // draws its step-1 placeholder, which is why the world stayed invisible.
   renderer.setScene(graph.root);
@@ -288,10 +308,16 @@ async function start(): Promise<void> {
   );
 
   const renderStats = view.totals;
+  const actorStats = actors.totalsSnapshot;
   console.log(
     `[ZimboRush] world seed=${options.seed} road=${world.spline.lengthM.toFixed(1)}m ` +
       `tris=${renderStats.triangles} meshes=${renderStats.meshes} ` +
       `skyTris=${sky.stats.triangles} skyDraws=${sky.stats.drawCalls} lights=${sky.stats.lightCount}`,
+  );
+  console.log(
+    `[ZimboRush] actors rivalTris=${actorStats.rivalTriangles} propTris=${actorStats.propTriangles} ` +
+      `instances=${actorStats.propInstances} blobTris=${actorStats.blobTriangles} dustTris=${actorStats.dustTriangles} ` +
+      `draws=${actorStats.drawCalls} shadowDiscs=${actors.shadows.discs.length}`,
   );
 
   const camera = new PerspectiveCamera(
@@ -385,6 +411,7 @@ async function start(): Promise<void> {
       }
       const riderInput: BikeInput = options.play ? input.update(dt) : NEUTRAL_INPUT;
       bike.step(dt, riderInput, noProps);
+      actors.step(dt, bike.state().roadS);
     },
     render: (alpha: number, frameDtMs: number): void => {
       // ?burn=N — busy-wait to force the ladder down deterministically.
@@ -405,6 +432,9 @@ async function start(): Promise<void> {
         hud.frame(pose.speed);
         audio.setSpeed(pose.speed);
       }
+
+      // Rival and FX follow the simulation, not the render rate.
+      actors.frame(frameDtMs / 1000, rivalMesh, camera.position.x, camera.position.z);
 
       renderer.render(camera);
 
