@@ -58,6 +58,8 @@ interface BootOptions {
   view: 'start' | 'overview';
   /** Override the world seed, for comparing track seeds side by side. */
   seed: number;
+  /** Multisample count override; -1 keeps the style's value (design doc §8). */
+  msaa: number;
 }
 
 type StageForceId = 0 | 0.5 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -91,6 +93,7 @@ function readBootOptions(): BootOptions {
     showTelemetry: params.get('telemetry') === '1',
     view,
     seed: parseNumber(params.get('seed'), WORLD_SEED),
+    msaa: params.get('msaa') === null ? -1 : parseNumber(params.get('msaa'), -1),
   };
 }
 
@@ -154,10 +157,24 @@ async function start(): Promise<void> {
   const renderer = new WebGL2Renderer();
   renderer.init(canvas, style, TIER);
 
+  // MSAA (design doc §8/§14.4): ?msaa=N overrides the style value so this step
+  // can compare N against 0 on the identical fly path. -1 means "use the style".
+  // Context antialias stays false either way.
+
   // Scene assembly through the frozen seams. Every object attaches to a named
   // slot, so draw order is fixed by the slot list rather than by merge order.
   const graph = new SceneGraph();
   const sky = createSky(graph, style);
+
+  {
+    const msaa = options.msaa >= 0 ? options.msaa : style.msaa;
+    renderer.setMsaa(msaa);
+    console.log(
+      msaa > 0
+        ? `[ZimboRush] msaa=${msaa} target=${renderer.msaaRenderTarget !== null ? 'built' : 'MISSING'}`
+        : '[ZimboRush] msaa=0 (direct to canvas, no resolve pass)',
+    );
+  }
 
   const providers = emptyProviders();
   providers.terrain = createHeightfield(options.seed);

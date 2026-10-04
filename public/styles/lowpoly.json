@@ -1,4 +1,36 @@
 {
   "id": "lowpoly",
-  "clearColor": "#FFC46B"
+  "clearColor": "#FFC46B",
+  "palette": {
+    "skyHorizon": "#FFC46B",
+    "skyMid": "#FF9552",
+    "skyZenith": "#E07A5F",
+    "sunDisc": "#FFE9C4",
+    "hillsDistant": "#6E4A5E",
+    "terrainLit": "#C99A6B",
+    "terrainShade": "#8A6A4F",
+    "road": "#C4A269",
+    "roadTrack": "#A5854F",
+    "foliage": "#5E6B45",
+    "rock": "#9A8B7A",
+    "bikeMetal": "#2E2A26"
+  },
+  "fog": {
+    "color": "#FFC46B",
+    "nearM": 120,
+    "farM": 420
+  },
+  "sun": {
+    "color": "#FFE9C4",
+    "intensity": 1.6,
+    "azimuthDeg": 255,
+    "elevationDeg": 14
+  },
+  "hemi": {
+    "sky": "#FF9552",
+    "ground": "#8A6A4F",
+    "intensity": 0.75
+  },
+  "renderScale": 1,
+  "msaa": 0
 }
