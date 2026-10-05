@@ -19,6 +19,7 @@ import { createBikePhysics } from './game/bike/physics';
 import { createPose, NEUTRAL_INPUT } from './game/bike/state';
 import type { BikeInput, InterpolatedPose } from './game/bike/state';
 import type { WorldParts } from './world/contracts';
+import { BUDGET } from './renderer/contracts';
 import type { Mesh } from 'three';
 
 /** The rival mesh from its slot, resolved once at boot. */
@@ -48,7 +49,19 @@ const TIER: TierId = 'default';
 
 const FOV_DEG = 70;
 const NEAR = 0.1;
-const FAR = 500;
+/**
+ * Camera far plane, metres. Raised from 500 by the visual patch (P4).
+ *
+ * At 500 the hill ring was cut in half: the ring spans 192-780 m, so only 49% of
+ * it was inside the frustum and the mid-distance ridges — the ones that make the
+ * horizon read as a landscape — were clipped away. The dome (radius 400 m,
+ * centred on the origin), the sun disc (orbit 370 m) and the ring's outer rim
+ * (780 m) all have to fit from any camera position, so the far plane has to
+ * clear the rim plus the camera's own excursion (~120 m). 1200 does that with
+ * margin and stays far below the point where depth precision would suffer —
+ * NEAR is 0.1 m, a ratio well inside what a 24-bit depth buffer holds cleanly.
+ */
+const FAR = 1200;
 
 /** World seed. Fixed so tracks and benchmarks are reproducible (design §3). */
 const WORLD_SEED = 2026;
@@ -75,7 +88,10 @@ interface BootOptions {
   showTelemetry: boolean;
   /**
    * Where the camera sits. 'start' = at the lap origin looking along the road
-   * (the default). 'overview' = pulled back, to judge the whole scene.
+   * (the default). 'overview' = pulled back and up, to judge the whole scene.
+   *
+   * 'overview' is a STATIC inspection framing for the screenshot gate: it is
+   * re-applied every frame precisely so the bike camera cannot take it back.
    */
   view: 'start' | 'overview';
   /** Override the world seed, for comparing track seeds side by side. */
@@ -86,11 +102,27 @@ interface BootOptions {
   fly: boolean;
   /** Enable keyboard input, or run hands-off (auto-throttle). */
   play: boolean;
+  /** Publish the live world on `window.__zimbo` for the headless harnesses. */
+  debug: boolean;
   /**
    * Hold full throttle with no steering. Used to verify the ride and camera
    * without a keyboard, and as a repeatable input for bench runs.
    */
   auto: boolean;
+  /**
+   * Stop the simulation after exactly this many fixed steps, or null to run
+   * forever.
+   *
+   * Added for the screenshot gate. Every moving thing in the scene is advanced
+   * by `step`, and the number of steps that have run when a screenshot is taken
+   * depends on wall-clock timing, so two captures of the same seed differed by
+   * 2-33 pixels wherever the rival happened to be (measured: the rival projected
+   * to x 579-589, y 271, matching the differing bounding box x 582-606, y
+   * 265-271). A pixel-identity claim is meaningless against that noise. With a
+   * fixed step count the world state is a pure function of the seed again, so
+   * `md5sum` of two captures is a real test.
+   */
+  fixedSteps: number | null;
 }
 
 type StageForceId = 0 | 0.5 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -128,6 +160,8 @@ function readBootOptions(): BootOptions {
     fly: params.get('fly') === '1',
     play: params.get('play') !== '0',
     auto: params.get('auto') === '1',
+    debug: flag(params, 'debug'),
+    fixedSteps: params.get('fixed') === null ? null : parseNumber(params.get('fixed'), 0),
   };
 }
 
@@ -157,6 +191,24 @@ function ensureWebGL2OrStop(): boolean {
 }
 
 /**
+ * Debug handle for the headless harnesses (`tools/harness/`). Off unless
+ * `?debug=1`, so production boots are untouched. Exposing the *live* world here
+ * is what lets a harness measure the real `heightAt` / `spline` / `bike`
+ * instead of re-implementing them in a scratch script — the scratch copies were
+ * how the last session produced a false 5.9 m deviation reading (Handover §7).
+ */
+function exposeDebug(parts: Record<string, unknown>): void {
+  (window as unknown as Record<string, unknown>).__zimbo = parts;
+}
+
+/**
+ * Reads a `?debug=1`-style boolean switch.
+ */
+function flag(params: URLSearchParams, name: string): boolean {
+  return params.get(name) === '1';
+}
+
+/**
  * First-person camera rig on an interpolated bike pose (design doc §11): eye
  * above the bars, looking along the heading, with roll from lean. Writes into
  * the camera in place — no allocation.
@@ -168,9 +220,12 @@ function placeBikeCamera(
 ): void {
   const ground = world.terrain.heightAt(pose.x, pose.z);
   camera.position.set(pose.x, ground + CAM.eyeHeightM, pose.z);
-  // Look along the heading. Heading is a yaw about Y; forward is (sin, 0, cos).
-  const fx = Math.sin(pose.heading);
-  const fz = Math.cos(pose.heading);
+  // Look along the heading. `BikeSnapshot.heading` is `atan2(z, x)` (physics
+  // convention), so forward in plan view is (cos h, sin h). This function used
+  // (sin h, cos h), which is 90 degrees off and mirrored — that is why the
+  // camera faced across the road instead of along it (patch finding F1).
+  const fx = Math.cos(pose.heading);
+  const fz = Math.sin(pose.heading);
   const aheadGround = world.terrain.heightAt(pose.x + fx * CAM.lookAheadM, pose.z + fz * CAM.lookAheadM);
   camera.lookAt(
     pose.x + fx * CAM.lookAheadM,
@@ -210,9 +265,12 @@ async function start(): Promise<void> {
   const eager = await eagerPromise;
   const cadence = await cadencePromise;
 
-  // Complete the style: the JSON carries id + clearColor today; the rest of the
-  // config (palette, fog, lights) arrives here with documented defaults.
-  const style = completeStyle(eager.style as never);
+  // Complete the style: the JSON carries id + clearColor plus whatever of the
+  // palette, fog and lights it authors; `completeStyle` fills the rest with the
+  // documented defaults. Before P3 the loader dropped every field except id and
+  // clearColor, so this call always fell through to the fallbacks and the style
+  // JSON was decorative.
+  const style = completeStyle(eager.style);
   const colors = new StyleColorSource(style);
 
   console.log(
@@ -403,8 +461,40 @@ async function start(): Promise<void> {
   // Elapsed simulated seconds. Advanced only inside step(), never in render(),
   // so the fly-through stays a pure function of simulation time.
   let simSeconds = 0;
+  /** Fixed steps taken; compared against `options.fixedSteps` to freeze the sim. */
+  let stepsRun = 0;
+  /** One-shot latch for the budget gate; the stats are only read once. */
+  let budgetChecked = false;
+  if (options.debug) {
+    exposeDebug({
+      terrain: world.terrain,
+      spline: world.spline,
+      bike,
+      fly,
+      camera,
+      pose,
+      graph,
+      style,
+      colors,
+      world,
+      actors,
+      options,
+      renderer,
+      view,
+      // The real rig function, so a harness measures the shipped camera code
+      // and not a re-implementation of it.
+      placeBikeCamera,
+      placeCamera,
+    });
+  }
   loop.start({
     step: (dt: number): void => {
+      // `?fixed=N` — stop advancing the world after N fixed steps, so a capture
+      // is reproducible for a given seed no matter how the frames fall.
+      if (options.fixedSteps !== null && stepsRun >= options.fixedSteps) {
+        return;
+      }
+      stepsRun++;
       simSeconds += dt;
       if (options.fly) {
         return; // the fly rig is sampled in render(), from simSeconds
@@ -422,8 +512,15 @@ async function start(): Promise<void> {
         }
       }
 
+      // The `view` framing is for inspection and for the screenshot gate, so the
+      // rigged camera must not overwrite it. It used to: `placeBikeCamera` ran
+      // after `placeCamera()` on every frame, so `?view=overview` rendered a
+      // byte-identical frame to `?view=start` and the documented switch did
+      // nothing (found while capturing the patch's before/after views).
       if (options.fly) {
         fly.update(camera, simSeconds);
+      } else if (options.view === 'overview') {
+        placeCamera();
       } else {
         // Interpolated render pose between the previous and current sim states
         // (design doc §8): smooth on any display rate, correct at half-rate.
@@ -437,6 +534,35 @@ async function start(): Promise<void> {
       actors.frame(frameDtMs / 1000, rivalMesh, camera.position.x, camera.position.z);
 
       renderer.render(camera);
+
+      // Budget gate (patch 2, Q0): read the RENDERER's own stats once, after the
+      // first frame, and fail loudly if the scene is outside `BUDGET`.
+      //
+      // Why the renderer and not `view.totals`: `view.totals` counts only the
+      // world meshes and silently omits the sky rig, every actor and the HUD.
+      // The boot log printed that figure, which is exactly how the world shipped
+      // drawing 19 draw calls and 66,818 triangles against a 15 / 45,000 budget
+      // while the log said 9 / 27,344. `renderer.stats()` is what the GL context
+      // actually did.
+      if (!budgetChecked) {
+        budgetChecked = true;
+        const stats = renderer.stats();
+        const triOver = stats.triangles > BUDGET.trianglesCeiling;
+        const drawOver = stats.drawCalls > BUDGET.drawCallsTotal;
+        console.log(
+          `[ZimboRush] budget gate: draws=${stats.drawCalls}/${BUDGET.drawCallsTotal} ` +
+            `tris=${stats.triangles}/${BUDGET.trianglesCeiling} ` +
+            `phoneCap=${BUDGET.trianglesPhoneCap} ` +
+            `source=renderer.stats ${triOver || drawOver ? 'FAIL' : 'PASS'}`,
+        );
+        if (triOver || drawOver) {
+          console.error(
+            `[ZimboRush] BUDGET EXCEEDED — triangles ${stats.triangles} ` +
+              `(ceiling ${BUDGET.trianglesCeiling}), draw calls ${stats.drawCalls} ` +
+              `(budget ${BUDGET.drawCallsTotal}). Rendered scene, not world meshes.`,
+          );
+        }
+      }
 
       const nowMs = performance.now();
       ladder.update(frameDtMs);

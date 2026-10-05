@@ -8,13 +8,22 @@
  * whole scene without touching a builder.
  *
  * Derived rules follow design doc §4 and are deliberately NOT authored:
- *   treeTrunk     = terrainShade darkened (value x 0.85)
- *   cloud         = sunDisc lightened ~10%
- *   rockVariant   = rock darkened by level
- *   foliageVariant= foliage darkened
- *   midHill       = mix(terrainShade, hillsDistant) by t
- *   bakedPropShadow = terrainShade darkened (x 0.75)
- *   blobShadow    = terrainShade darkened (x 0.6)
+ *   treeTrunk       = dirt darkened (value x 0.72)
+ *   cloud           = sunDisc lightened ~10%
+ *   rockVariant     = rock darkened by level
+ *   foliageVariant  = foliage darkened
+ *   midHill         = mix(terrainShade, hillsDistant) by t
+ *   bakedPropShadow = dirt darkened (x 0.62)
+ *   blobShadow      = dirt darkened (x 0.45)
+ *
+ * The three brown rules read `dirt`, not `terrainShade`. Before the visual
+ * patch `terrainShade` was the only brown in the palette, so trunks, shadows
+ * and dust were all hung off it. Once `terrainLit`/`terrainShade` became the
+ * olive GRASS pair (P3), leaving those rules on `terrainShade` would have made
+ * tree trunks, prop shadows and the dust plume olive green — the exact defect
+ * P3 was written to prevent. Baked and blob shadows use different factors
+ * (0.62 / 0.45) rather than the old 0.75 / 0.6 because the reference shows
+ * distinctly soft, clearly darker cast shadows on olive ground.
  *
  * Colour work uses three's Color so the mixing matches the renderer exactly.
  */
@@ -69,7 +78,7 @@ export class StyleColorSource implements ColorSource {
     const b = this.scratchB;
     switch (rule.kind) {
       case 'treeTrunk':
-        return scale(p.terrainShade, 0.85, a);
+        return scale(p.dirt, 0.72, a);
       case 'cloud':
         return lighten(p.sunDisc, 0.1, a, b);
       case 'rockVariant': {
@@ -82,9 +91,9 @@ export class StyleColorSource implements ColorSource {
       case 'midHill':
         return mix(p.terrainShade, p.hillsDistant, rule.t, a, b);
       case 'bakedPropShadow':
-        return scale(p.terrainShade, 0.75, a);
+        return scale(p.dirt, 0.62, a);
       case 'blobShadow':
-        return scale(p.terrainShade, 0.6, a);
+        return scale(p.dirt, 0.45, a);
       default:
         // Exhaustive at compile time; this guards a future rule kind at runtime.
         return p.terrainShade;
@@ -108,6 +117,7 @@ export function withPaletteDefaults(config: FullStyleConfig): FullStyleConfig {
     hillsDistant: p.hillsDistant ?? d.hillsDistant,
     terrainLit: p.terrainLit ?? d.terrainLit,
     terrainShade: p.terrainShade ?? d.terrainShade,
+    dirt: p.dirt ?? d.dirt,
     road: p.road ?? d.road,
     roadTrack: p.roadTrack ?? d.roadTrack,
     foliage: p.foliage ?? d.foliage,
@@ -122,23 +132,24 @@ export function withPaletteDefaults(config: FullStyleConfig): FullStyleConfig {
  * absent from the style JSON; the JSON is the real source of truth.
  */
 export const FALLBACK_PALETTE: StylePalette = {
-  skyHorizon: '#FFC46B',
-  skyMid: '#FF9552',
-  skyZenith: '#E07A5F',
-  sunDisc: '#FFE9C4',
-  hillsDistant: '#6E4A5E',
-  terrainLit: '#C99A6B',
-  terrainShade: '#8A6A4F',
-  road: '#C4A269',
-  roadTrack: '#A5854F',
-  foliage: '#5E6B45',
-  rock: '#9A8B7A',
-  bikeMetal: '#2E2A26',
+  skyHorizon: '#F6C08C',
+  skyMid: '#EA9E7C',
+  skyZenith: '#D8988F',
+  sunDisc: '#FFEDC6',
+  hillsDistant: '#5A3644',
+  terrainLit: '#8A7050',
+  terrainShade: '#5B4A3A',
+  dirt: '#9A7350',
+  road: '#B08A63',
+  roadTrack: '#8C6B4A',
+  foliage: '#4F5A44',
+  rock: '#6E5A66',
+  bikeMetal: '#2A2622',
 };
 
 /** Sunset defaults for a style that does not specify fog/lights (doc §4). */
 export const FALLBACK_LIGHTING = {
-  fog: { color: FALLBACK_PALETTE.skyHorizon, nearM: 120, farM: 420 },
+  fog: { color: FALLBACK_PALETTE.skyHorizon, nearM: 300, farM: 1500 },
   // Elevation 14 matches the angle sky.ts uses for the sun DISC, so the visible
   // sun and the key light agree. At 6 deg the light was near-horizontal and
   // upward-facing terrain received ~10% of it, which rendered the ground far

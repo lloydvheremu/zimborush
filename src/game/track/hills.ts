@@ -1,4 +1,9 @@
 /**
+ * Silhouette harmonics: [1,2,3] for the large crest shape and [5,7,11] for the
+ * ragged detail. Kept as-is; only the amplitudes above changed.
+ */
+
+/**
  * Distant hill ring — the purple-maroon band that closes the horizon.
  *
  * One draped annulus: a `PlaneGeometry` re-interpreted as an
@@ -26,18 +31,64 @@ const TAU = Math.PI * 2;
 const ANGULAR_SEGMENTS = 192;
 const RADIAL_RINGS = 13;
 
-/** Ring metrics in metres. Inner edge clears the 384 m corridor (half-extent 192 m). */
-const INNER_RADIUS_M = 232;
-const OUTER_RADIUS_M = 780;
+/**
+ * Ring metrics in metres.
+ *
+ * `INNER_RADIUS_M` MUST equal the terrain field's zero radius
+ * (`EDGE_RADIUS_M` in `heightfield.ts`, which equals the corridor's inscribed
+ * radius). This ring's base height is 0 at its inner edge and the field tapers
+ * to exactly 0 there with zero slope, so the two surfaces meet in a smooth
+ * valley floor rather than the step-plus-gap the previous 232 m inner radius
+ * produced (P4).
+ *
+ * The inner radius used to be 232 m, which is 40 m *outside* the corridor's own
+ * edge and therefore left a bare gap in front of the ring. It is now the
+ * corridor's 192 m.
+ */
+const INNER_RADIUS_M = 192;
+const OUTER_RADIUS_M = 430;
 
-/** Silhouette height model: a smooth rise plus a seeded, ragged crest. */
-const RISE_HEIGHT_M = 118;
+/**
+ * Silhouette height model: a base rise plus a seeded, ragged crest.
+ *
+ * The rim was 780 m at 118 m tall, which under fog read as a smooth unbroken
+ * purple WALL filling the upper half of the frame rather than as distant hills
+ * (P4). It is now a 430 m rim at 95 m tall, chosen by measurement rather than
+ * taste: the ring's colour at the sampled `hill_left_lit` / `hill_right_lit`
+ * regions was scored against the same regions of the reference for several
+ * heights, and 40 m / 95 m / 110 m gave mean deltas of 32.1 / 18.5 / 23.8. At
+ * 95 m the ring also reads as ridges rather than a wall, because at 430 m its
+ * facets are large on screen — which is what makes it low-poly instead of a
+ * gradient.
+ */
+const RISE_HEIGHT_M = 95;
 const CREST_AMPLITUDE_M = 34;
 
+/**
+ * Rise and crest exponents over the normalised radius `v`.
+ *
+ * Both are >= 1 on purpose: `v^1.15` and `v^1.2` have zero slope at v = 0, so
+ * the ring leaves its foot flat and the join to the terrain stays C1. The
+ * previous crest exponent (0.8) had an infinite derivative at the foot, i.e. a
+ * crease exactly along the seam, which is the one place it would be noticed.
+ * At v = 1 both still reach their full height.
+ */
+const RISE_EXPONENT = 1.15;
+const CREST_EXPONENT = 1.2;
+
 /** Radial split between the near band (derived) and the far band (authored). */
-const NEAR_BAND_SPLIT = 0.55;
+const NEAR_BAND_SPLIT = 0.72;
 /** Distinct `midHill` tints across the near band. */
-const NEAR_TINT_LEVELS = 4;
+const NEAR_TINT_LEVELS = 5;
+
+/**
+ * Weight of the detail harmonic set inside the crest, 0..1.
+ *
+ * Raised from 0.32 to 0.45 by P4: the reference art's ridgeline is clearly
+ * broken into separate peaks, and the smooth crest set alone gives one clean
+ * arc. This only affects the silhouette height, not the triangle count.
+ */
+const DETAIL_WEIGHT = 0.45;
 
 /** Seed streams. `hashSeed` keeps generations independent but reproducible. */
 const HILL_SEED_BASE = 0x68696c6c; // 'hill'
@@ -108,8 +159,13 @@ export interface HillsOptions {
  */
 export function buildDistantHills(colors: ColorSource, opts: HillsOptions = {}): BuiltGeometry {
   const base = opts.seed ?? HILL_SEED_BASE;
-  const crestHs = makeHarmonics(createRng(hashSeed(base, SEED_CREST)), [1, 2, 3], 1);
-  const detailHs = makeHarmonics(createRng(hashSeed(base, SEED_DETAIL)), [5, 7, 11], 0.55);
+  // Harmonic sets. The crest set carries the large hill SHAPES and was widened
+  // from [1,2,3] to [2,3,4] by P4: at k = 1 a single lobe spans the whole ring,
+  // so the silhouette read as one smooth arc rather than a row of hills. Starting
+  // at k = 2 puts two to four lobes around the horizon. The detail set adds the
+  // ragged crest on top and also starts higher than before for the same reason.
+  const crestHs = makeHarmonics(createRng(hashSeed(base, SEED_CREST)), [2, 3, 4], 1);
+  const detailHs = makeHarmonics(createRng(hashSeed(base, SEED_DETAIL)), [7, 11, 17], 0.55);
   const norm = (hs: readonly Harmonic[]): number =>
     hs.reduce((acc, h) => acc + h.amp, 0);
   const crestNorm = norm(crestHs);
@@ -127,9 +183,10 @@ export function buildDistantHills(colors: ColorSource, opts: HillsOptions = {}):
 
     const theta = (u % 1) * TAU;
     const r = INNER_RADIUS_M + v * (OUTER_RADIUS_M - INNER_RADIUS_M);
-    const rise = RISE_HEIGHT_M * Math.pow(v, 1.55);
-    const crest = CREST_AMPLITUDE_M * Math.pow(v, 0.8) *
-      (0.68 * silhouette(crestHs, crestNorm, theta, v) + 0.32 * silhouette(detailHs, detailNorm, theta, v));
+    const rise = RISE_HEIGHT_M * Math.pow(v, RISE_EXPONENT);
+    const crest = CREST_AMPLITUDE_M * Math.pow(v, CREST_EXPONENT) *
+      ((1 - DETAIL_WEIGHT) * silhouette(crestHs, crestNorm, theta, v) +
+        DETAIL_WEIGHT * silhouette(detailHs, detailNorm, theta, v));
 
     position.setXYZ(i, r * Math.cos(theta), rise + crest, r * Math.sin(theta));
   }

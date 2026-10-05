@@ -70,8 +70,11 @@ import type { FullStyleConfig, HexColor } from '../renderer/contracts';
 import type { SceneGraph } from '../renderer/sceneGraph';
 
 /** Dome radius in metres. Sized so the far side of the sphere is never beyond
- * the camera far plane (500 m, main.ts): 400 + ~70 m of corridor offset leaves
- * ~30 m of margin, verified at boot by `logSkyBudget`. */
+ * the camera far plane (1200 m, main.ts): 400 + ~175 m of world excursion leaves
+ * ~600 m of margin. The world grew when the hills moved out to a 192 m foot and
+ * a 780 m rim (P4), so the ring, not the dome, is now the closest thing to the
+ * far plane; keeping the dome at 400 m also keeps its facets at the same angular
+ * size as the reference. */
 const DOME_RADIUS_M = 400;
 
 /** Dome sphere segmentation. 24×14 is the design-doc facet scale — large
@@ -80,17 +83,18 @@ const DOME_WIDTH_SEGMENTS = 24;
 const DOME_HEIGHT_SEGMENTS = 14;
 
 /** Dome centre in world metres — the world origin, i.e. the centre of the
- * design doc's ~96×96 m corridor. Centre-fixed rather than camera-fixed, so the
+ * design doc's corridor. Centre-fixed rather than camera-fixed, so the
  * horizon sits at one stable world position for terrain and hills. If the real
  * world centre turns out to be elsewhere (a track-layer decision, not this
  * file's), move THIS constant and re-check the far-plane margin: camera
- * excursion (≤ ~68 m) + radius (400 m) must stay under the 500 m far plane. */
+ * excursion (now up to ~175 m, the corridor's own radius is 192 m) + radius
+ * (400 m) must stay under the 1200 m far plane. */
 const DOME_CENTER = new Vector3(0, 0, 0);
 
 /** Sun disc radius and its distance from the dome centre. The disc subtends
  * ~6.8° from the corridor — stylised, but it is the sunset focal point. The
- * 370 m orbit keeps the disc bounding sphere inside the far plane from every
- * corridor position (370 + ~70 + 22 ≈ 462 < 500). */
+ * 370 m orbit keeps the disc bounding sphere well inside the 1200 m far plane
+ * from every corridor position (370 + 192 + 22 = 584 m). */
 const SUN_DISC_RADIUS_M = 22;
 const SUN_DISC_ORBIT_M = 370;
 

@@ -4,7 +4,7 @@
  * One geometry, one mesh, one draw call (§5's "road ribbon + shoulders +
  * wheel tracks", budget ~4k triangles). Around the closed loop: 280 quads ×
  * 7 colour columns × 2 triangles = 3920 triangles, carrying `road`,
- * `roadTrack` and `terrainShade` as face colours in a single vertex-colour
+ * `roadTrack` and `dirt` as face colours in a single vertex-colour
  * buffer — no textures, no second geometry.
  *
  * Drapery, not extrusion. `ISplineSource.pointAt` is the frozen PLAN-VIEW
@@ -22,9 +22,12 @@
  *
  * The two inner bands are the wheel tracks (`roadTrack`), the middle and outer
  * bands the driving surface (`road`), and the outermost 0.7 m strips the
- * graded shoulders (`terrainShade`, design doc §5). Track offset/width and
+ * graded shoulders (`dirt`, design doc §5). Track offset/width and
  * shoulder width are ESTIMATEs — the doc fixes the element, not its
- * millimetres.
+ * millimetres. The shoulder key moved from `terrainShade` to `dirt` in the
+ * visual patch (P3): `terrainLit`/`terrainShade` are now the olive GRASS pair,
+ * and an olive shoulder on a brown road would read as a painted stripe rather
+ * than as graded dirt.
  *
  * Mesh convention (settled): `new PlaneGeometry(...).toNonIndexed()` — one
  * vertex triple per triangle, each face element carrying exactly ONE flat
@@ -76,17 +79,17 @@ const ROAD_TRIANGLE_BUDGET = 4000;
 const GEOMETRY_NAME = 'roadRibbon';
 
 /** The style keys this ribbon paints with: its three tint families. */
-type RoadPaletteKey = 'road' | 'roadTrack' | 'terrainShade';
+type RoadPaletteKey = 'road' | 'roadTrack' | 'dirt';
 
 /** Column → tint family, left to right (see the profile in the header). */
 const COLUMN_TINTS: readonly RoadPaletteKey[] = [
-  'terrainShade',
+  'dirt',
   'road',
   'roadTrack',
   'road',
   'roadTrack',
   'road',
-  'terrainShade',
+  'dirt',
 ];
 
 /** Same #RRGGBB shape the style loader enforces. */
@@ -99,9 +102,9 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
  * colours belong to the style layer (task 11).
  */
 const FALLBACK_TINTS: Record<RoadPaletteKey, HexColor> = {
-  road: '#C4A269',
-  roadTrack: '#A5854F',
-  terrainShade: '#8A6A4F',
+  road: '#B08A63',
+  roadTrack: '#8C6B4A',
+  dirt: '#9A7350',
 };
 
 /** Palette key → a linear-space `Color`, falling back as documented above. */

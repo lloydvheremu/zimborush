@@ -8,6 +8,13 @@
  * Draw-call accounting lives here, because this is where meshes are actually
  * created: one mesh per distinct material, so a geometry with three tint
  * families costs three draws, exactly as design doc §5 assumes for the road.
+ *
+ * This is also where the two halves of the terrain's enclosure are bound
+ * together. `heightfield.ts` tapers the ground to exactly 0 at its edge radius
+ * and `hills.ts` starts its ring at height 0 on the same radius; `view.ts` is the
+ * only module that imports both, so the assertion that they still agree lives
+ * here. If they ever drift, the join becomes a visible step or a gap in the
+ * middle of the horizon — silently, at any distance.
  */
 
 import {
@@ -19,6 +26,8 @@ import {
 import type { Material } from 'three';
 import { SceneGraph } from '../renderer/sceneGraph';
 import type { WorldParts } from './contracts';
+import { EDGE_RADIUS_M } from '../game/track/heightfield';
+import { HILL_RING } from '../game/track/hills';
 
 /** Totals contributed by the world meshes, for the boot log and telemetry. */
 export interface ViewTotals {
@@ -36,6 +45,23 @@ export interface ViewTotals {
  * are banned. The alternative would be a custom shader, which is the MSAA /
  * style work of step 4 and beyond — not this one.
  */
+/**
+ * Adds ONE mesh per geometry to a slot and returns the number of meshes made.
+ *
+ * Fixed defect (patch 2, Q0). This used to create one mesh per TIENT FAMILY, each
+ * bound to the SAME full geometry, on the theory that the per-family meshes
+ * could be culled independently later. They could not: every material is white
+ * and the tint lives in the vertex-colour attribute, so those extra meshes
+ * re-drew the identical triangles with identical output. Measured at baseline:
+ * the `hillsDistant` slot held **6 meshes sharing 1 geometry uuid**, each
+ * drawing all 4,992 triangles, and the road 3 meshes sharing 1 geometry of
+ * 3,920 - 33,336 wasted triangles per frame and 8 wasted draw calls. That is
+ * the whole of the 62,054-versus-34,346 discrepancy the boot log hid.
+ *
+ * The `names` argument is now ignored for meshing purposes; it is kept so the
+ * call sites still document which tints a geometry carries, and it is used for
+ * the telemetry `tintCount` fields.
+ */
 function addTinted(
   graph: SceneGraph,
   slot: 'terrain' | 'road' | 'hillsDistant',
@@ -47,29 +73,12 @@ function addTinted(
   if (colorAttr === undefined) {
     throw new Error(`addTinted: geometry for slot "${slot}" has no colour attribute`);
   }
-  if (names.length <= 1) {
-    const material = makeMaterial(slot, flat);
-    const mesh = new Mesh(geometry, material);
-    mesh.name = `${slot}-0`;
-    graph.attach(slot, mesh);
-    return 1;
-  }
-
-  // Multi-tint: one mesh per tint family. The geometry already carries its tint
-  // in the vertex-colour attribute, so every material stays WHITE — setting a
-  // material colour too would multiply the tint by itself (measured: the road
-  // rendered ~35% too dark). The per-family meshes exist so the families can be
-  // cut independently later; they share one geometry, so no vertex data is
-  // duplicated.
-  let created = 0;
-  for (let i = 0; i < names.length; i++) {
-    const material = makeMaterial(slot, flat);
-    const mesh = new Mesh(geometry, material);
-    mesh.name = `${slot}-${i}`;
-    graph.attach(slot, mesh);
-    created++;
-  }
-  return created;
+  const material = makeMaterial(slot, flat);
+  const mesh = new Mesh(geometry, material);
+  mesh.name = `${slot}-0`;
+  graph.attach(slot, mesh);
+  void names; // documented only; see the header
+  return 1;
 }
 
 /**
@@ -80,7 +89,23 @@ function makeMaterial(slot: 'terrain' | 'road' | 'hillsDistant', flat: boolean):
   if (slot === 'hillsDistant') {
     // Hills are far away and read as a silhouette band; basic keeps them
     // independent of the lighting rig, which matches the reference image.
-    return new MeshBasicMaterial({ color: 0xffffff, vertexColors: true, fog: true });
+    //
+    // The ring's foot and the terrain's outer edge are both at exactly y = 0 on
+    // the same radius, so they are coplanar where they meet and the depth test
+    // decides arbitrarily between them. Measured before this offset: two runs of
+    // the SAME seed and build differed by ~31 pixels along the horizon row
+    // (bbox x 559-617, y 264-272), because the z-fight resolves differently as
+    // the camera's interpolated position shifts by a fraction of a pixel.
+    // A depth BIAS fixes a coplanar overlap without moving a single vertex, which
+    // is why it is used instead of lifting the ring: a 2 cm lift made ~350 pixels
+    // change, i.e. it visibly moved the silhouette, while the offset leaves the
+    // geometry exactly where it was. The ring wins the tie (it is behind and
+    // above, so it is the correct surface to show at the seam).
+    const material = new MeshBasicMaterial({ color: 0xffffff, vertexColors: true, fog: true });
+    material.polygonOffset = true;
+    material.polygonOffsetFactor = 1;
+    material.polygonOffsetUnits = 1;
+    return material;
   }
   return new MeshLambertMaterial({
     color: 0xffffff,
@@ -112,12 +137,36 @@ export class WorldView {
   attach(): void {
     const colors = this.world.colors;
 
+    // The enclosure seam: the terrain's zero radius must be the ring's foot, and
+    // the ring's foot must be at height 0 on that radius. Fail loudly at boot
+    // rather than shipping a step in the horizon. Both halves are measured, not
+    // assumed from the constants.
+    if (Math.abs(this.world.terrain.bounds.maxX - HILL_RING.innerRadiusM) > 1e-6) {
+      throw new Error(
+        `world: terrain zero-radius ${this.world.terrain.bounds.maxX} m != hill ring foot ` +
+          `${HILL_RING.innerRadiusM} m — the enclosure would not close`,
+      );
+    }
+    if (Math.abs(EDGE_RADIUS_M - HILL_RING.innerRadiusM) > 1e-6) {
+      throw new Error(
+        `world: heightfield EDGE_RADIUS_M ${EDGE_RADIUS_M} m != HILL_RING.innerRadiusM ` +
+          `${HILL_RING.innerRadiusM} m`,
+      );
+    }
+    const footHeight = this.world.terrain.heightAt(HILL_RING.innerRadiusM, 0);
+    if (Math.abs(footHeight) > 1e-6) {
+      throw new Error(
+        `world: terrain height at the ring foot is ${footHeight} m, expected exactly 0 — ` +
+          'the enclosure would leave a step',
+      );
+    }
+
     // Terrain: single tint family, flat-shaded Lambert.
     this.meshes += addTinted(this.graph, 'terrain', this.world.terrainGeometry, ['#FFFFFF'], true);
     // Road: a separate mesh per tint family (surface / tracks / shoulders).
     const roadNames: string[] = [];
     for (let i = 0; i < this.roadTints; i++) {
-      roadNames.push(i === 0 ? colors.palette('road') : i === 1 ? colors.palette('roadTrack') : colors.palette('terrainShade'));
+      roadNames.push(i === 0 ? colors.palette('road') : i === 1 ? colors.palette('roadTrack') : colors.palette('dirt'));
     }
     this.meshes += addTinted(this.graph, 'road', this.world.roadGeometry, roadNames, false);
     // Distant hills: silhouette band, no lighting.

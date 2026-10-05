@@ -1,12 +1,17 @@
 import { loadStyle } from '../styles/loadStyle';
-import type { StyleConfig } from '../renderer/IRenderer';
+import type { LoadedStyle } from '../styles/loadStyle';
 
 /**
  * Eager phase — everything that must exist before the first frame.
  * In this step that is exactly one item: the style JSON (fetched + validated).
+ *
+ * `style` is the loaded PARTIAL, not the completed config: `completeStyle` fills
+ * the defaults, and it lives with the rest of the style layer. Typing it as
+ * `LoadedStyle` here (rather than the narrow `StyleConfig`) is what stops the
+ * loader's validated fields from being dropped on the way through.
  */
 export interface EagerBundle {
-  style: StyleConfig;
+  style: LoadedStyle;
 }
 
 /** Loads the eager bundle. Called once at boot, before any rendering. */

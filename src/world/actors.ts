@@ -256,6 +256,29 @@ export class ActorsView {
     this.dust?.setEnabled(enabled);
   }
 
+  /**
+   * Read-only view of the FX the actors own, for the headless harnesses. The
+   * scene graph cannot be reverse-engineered reliably enough to check these
+   * (blob-shadow winding, dust ring occupancy), so the harnesses read the
+   * objects themselves. Exposes references and primitive snapshots only; no
+   * per-frame allocation and no mutation path. Added during the visual patch.
+   */
+  get fxForTest(): {
+    rivalPose: RivalPose;
+    blobShadows: BlobShadows | null;
+    dust: DustField | null;
+    propRecords: readonly PropRecord[];
+    shadowDiscs: readonly PropShadowDisc[];
+  } {
+    return {
+      rivalPose: this.rivalPose,
+      blobShadows: this.blobShadows,
+      dust: this.dust,
+      propRecords: this.propRecords,
+      shadowDiscs: this.shadowDiscs,
+    };
+  }
+
   get totalsSnapshot(): ActorTotals {
     return this.totals;
   }

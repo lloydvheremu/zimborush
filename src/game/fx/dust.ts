@@ -82,10 +82,11 @@ const FADE_OUT_POWER = 1.4;
 const PEAK_ALPHA = 0.5;
 /**
  * Documented fallback only, if the style layer returns a malformed hex. §4
- * names terrainShade as the dirt reference colour, so its authored value
- * (#8A6A4F) is the stand-in; no other hex is hardcoded here.
+ * names the dirt reference colour for the plume; `dirt` is now its own authored
+ * palette key (P3), and its palette value is the stand-in here. No other hex is
+ * hardcoded.
  */
-const FALLBACK_DIRT_HEX = 0x8a6a4f;
+const FALLBACK_DIRT_HEX = 0x9a7350;
 const HEX6 = /^#[0-9a-fA-F]{6}$/;
 
 /** Reads `#RRGGBB`, or `fallback` when the style layer returned something else. */
@@ -102,8 +103,10 @@ export interface DustMotion {
   readonly x: number;
   readonly z: number;
   /**
-   * Rival heading in radians. Direction of travel is (sin h, 0, cos h) — the
-   * kick-up is placed opposite to it.
+   * Rival heading in radians, `atan2(z, x)` sense (the physics convention).
+   * Direction of travel is `(cos h, 0, sin h)`; the kick-up is placed opposite
+   * to it. This said `(sin h, 0, cos h)` before P0 — that is the 90°-off
+   * convention `placeBikeCamera` used, and it threw the dust sideways.
    */
   readonly headingRad: number;
   /** Rival speed along its heading (m/s). 0 or less parks the emitter. */
@@ -189,7 +192,7 @@ export function createDustField(options: DustFieldOptions): DustField {
     side: DoubleSide, // a yaw billboard stays visible if the camera swings past
     vertexColors: true, // vec4 attribute => per-vertex alpha (three >= r152)
   });
-  material.color.setHex(readHex6(options.colors.palette('terrainLit'), FALLBACK_DIRT_HEX));
+  material.color.setHex(readHex6(options.colors.palette('dirt'), FALLBACK_DIRT_HEX));
   material.name = 'dustSprite';
 
   const mesh = new Mesh(geometry, material);
@@ -285,10 +288,12 @@ export function createDustField(options: DustFieldOptions): DustField {
     const glow = rng.range(BRIGHTNESS_MIN, BRIGHTNESS_MAX);
 
     const heading = motion.headingRad;
-    const dirX = Math.sin(heading);
-    const dirZ = Math.cos(heading);
-    const rightX = Math.cos(heading);
-    const rightZ = -Math.sin(heading);
+    // Physics convention (P0): forward is (cos h, sin h) in plan view.
+    const dirX = Math.cos(heading);
+    const dirZ = Math.sin(heading);
+    // Right-hand normal of that forward, i.e. rotate forward by -90 degrees.
+    const rightX = Math.sin(heading);
+    const rightZ = -Math.cos(heading);
 
     // Behind the rival: opposite the heading, plus lateral jitter, seeded on
     // the terrain surface (plan-view positions carry no height).

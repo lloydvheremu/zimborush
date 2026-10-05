@@ -48,7 +48,7 @@ export interface BlobRider {
   /** Rider position on the plan-view plane (metres). */
   readonly x: number;
   readonly z: number;
-  /** Heading in radians; the long axis runs along (sin h, 0, cos h). */
+  /** Heading in radians; the long axis runs along (cos h, 0, sin h). */
   readonly headingRad: number;
 }
 
@@ -97,10 +97,12 @@ export function createBlobShadows(options: BlobShadowOptions): BlobShadows {
 
   function writeShadow(slot: number, rider: BlobRider): void {
     const heading = rider.headingRad;
-    const forwardX = Math.sin(heading) * BIKE_HALF_LENGTH_M;
-    const forwardZ = Math.cos(heading) * BIKE_HALF_LENGTH_M;
-    const rightX = Math.cos(heading) * BIKE_HALF_WIDTH_M;
-    const rightZ = -Math.sin(heading) * BIKE_HALF_WIDTH_M;
+    // Physics convention (P0): forward is (cos h, sin h) in plan view, so the
+    // long axis of the quad lines up with the bike instead of across it.
+    const forwardX = Math.cos(heading) * BIKE_HALF_LENGTH_M;
+    const forwardZ = Math.sin(heading) * BIKE_HALF_LENGTH_M;
+    const rightX = Math.sin(heading) * BIKE_HALF_WIDTH_M;
+    const rightZ = -Math.cos(heading) * BIKE_HALF_WIDTH_M;
 
     const ax = rider.x - forwardX - rightX;
     const az = rider.z - forwardZ - rightZ;

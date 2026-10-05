@@ -26,8 +26,17 @@ export interface StylePalette {
   sunDisc: HexColor;
   /** Purple-maroon distant hill band — authored, not derived. */
   hillsDistant: HexColor;
+  /** Sun-facing grass / ground facet. Greener than the roads and the dust. */
   terrainLit: HexColor;
+  /** Shadowed grass / ground facet. */
   terrainShade: HexColor;
+  /**
+   * Bare dirt: road shoulders, tree trunks and dust. Split out of
+   * `terrainShade` by the visual patch (P3), because the target art has olive
+   * grass AND warm brown dirt, and one key cannot be both. Derived rules that
+   * used to read `terrainShade` for a "brown" purpose now read this key.
+   */
+  dirt: HexColor;
   road: HexColor;
   roadTrack: HexColor;
   foliage: HexColor;
