@@ -1,0 +1,93 @@
+# ZimboRush — Patch 2 (orchestrator prompt)
+
+Follow-up to `autoclaw_patch_prompt.md` and `PATCH_REPORT.md`. **The rules in the first prompt remain in force** (originality, budgets, zero per-frame allocation, frozen seams, research-first and licence rules in §2a, Chromium-only capture in §4, the report format in §6, the stop conditions in §7). Re-read them. Where this prompt is stricter, follow this prompt. Image A (target, `3-low-poly.jpeg`) and the new side-by-side PNGs are attached; if you cannot view images, say so in your first line.
+
+## 0. Owner decisions (answers to the five questions in your report)
+
+These are the drafted answers. Where the owner has edited them below, the edit wins.
+
+1. **Budget breach: fix it now**, as the first task (Q0). It is a bug, not a content problem (see Q0).
+2. **Track layout: constrain it.** Minimum turn radius **40 m** (ESTIMATE; fall back to 25 m only if a closed ~600–1000 m loop cannot be built at 40 m, and report why). The old layout is unrideable, so there is nothing to preserve.
+3. **Default camera framing: tune it together with the first-person bike** (Q3), not before.
+4. **Screenshot verdicts: the owner's, from the side-by-sides** (section 1 below). Your own were close but too generous on hills and ground.
+5. **Process: single-writer is accepted for this patch**, given `Handover.md` §8.1/§8.3, on these conditions: work on a branch `patch2` (not `main`); **commit after every task** with the task ID in the message; report the commit hashes; never force-push, rebase or push; verify every stage yourself and say which checks you could not run.
+
+## 1. What the screenshots show (owner's read, after patch 1)
+
+Start view (`?view=start`):
+- **Sky:** colour is close. But the **sun disc and clouds are not in frame**, and the target has both.
+- **Hills:** one smooth rounded silhouette, flat colour, no facets, no layered ridges. The target has several overlapping ridges with clearly faceted lit and shaded planes. Verdict: **off** (the colour deltas hid this).
+- **Ground:** a flat brown plain with no visible facets, no slope variation, no light/shade contrast. **Off.**
+- **Road:** unreadable. The foreground shows wide light and dark bands crossing in an X pattern, which looks like the road ribbon folding over itself (F4), not a road leading away. **Off.**
+- **Trees:** tiny, at the horizon. **Off.** **Bike and rival:** absent from frame.
+
+Overview (`?view=overview`):
+- The road loop is a tangled, self-overlapping scribble with sharp cusps. It cannot be ridden.
+- The terrain reads as one smooth mound with tiny scattered trees, not a valley between ridges.
+
+Your colour table also shows the road **lighter than the ground in the target** (`road_mid #8F5E43` vs `ground_left #654D3C`) but **as dark as or darker than the ground in the build** (`#60391F` vs `#683D22`). Fixing that contrast is part of Q2. (The reference road is not textured; it is flat colour with faint facets. Do not use "textured surface" as the reason it cannot match.)
+
+## 2. Task list (do in this order; owner approves each gate before the next)
+
+### Q0. Budget bug and measurement (orchestrator)
+
+- **Hypothesis to verify first:** `WorldView.addTinted` creates **one mesh per tint family, each using the same full geometry** (materials are white, the tint is already in the vertex colours). So the road is drawn `tintCount` times and the hill ring `tintCount` times, pixel-identical. Predicted baseline: 34,346 + 2×3,920 (road) + 4×4,992 (hills) = 62,154 vs your measured **62,054**. Confirm by checking whether the meshes in the `road` and `hillsDistant` slots share one geometry (`geometry.uuid`).
+- **Fix:** one mesh per geometry per slot. Do not change what is drawn. Expect the renderer totals to fall to roughly the 14-draw / ~34k-triangle region documented in `ORCHESTRATION.md`; report actuals.
+- **Add a budget gate:** a harness check (and a telemetry/boot-log line) that reads **`renderer.stats()`**, not `view.totals`, with all actors present, and fails if triangles exceed `BUDGET.trianglesCeiling` or draw calls exceed `BUDGET.drawCallsTotal` (dust on and off). The previous boot log counted the wrong source, which is how this went unnoticed.
+- **Also:** re-run the terrain-mesh vs `heightAt` deviation check on seeds **1, 7, 42, 1234 and 2026** and report each. The current 0.0461 m against the 0.05 m limit is only proven for 2026.
+- Acceptance: renderer stats within budget with the gate passing; screenshots before/after are pixel-identical (md5 equal); deviation reported for all five seeds. Record which are within tolerance; do not loosen the tolerance.
+
+### Q1. Rideable road (owner decision 2)
+
+- **Research first** (§2a of the first prompt): closed-track generation with a curvature limit (e.g. smoothing/relaxation of a perturbed loop, curvature-bounded splines). Report candidates and licences before writing code. Prefer re-implementing a known technique in our own style.
+- Rework `road.ts` so the seeded loop satisfies, **for seeds 1, 7, 42, 1234 and 2026**:
+  - max |curvature| ≤ 1/40 m⁻¹ (report the real value);
+  - closure exact (`pointAt(0)` = `pointAt(lengthM)`), deterministic from the seed;
+  - no road self-overlap: any two arcs more than ~50 m apart along the loop stay at least **25 m apart** in plan view (ESTIMATE; wider than the 8.4 m ribbon plus shoulders);
+  - loop length 600–1000 m (ESTIMATE; keep lap time similar) and inside the 384 m corridor with margin to its edge;
+  - the road-ribbon cross-sections never fold: the tangent turn between adjacent rows (~3 m apart) stays under ~8° (ESTIMATE, consistent with R ≥ 40 m).
+- Re-run the autopilot (pure pursuit, real `BikeInput`, real `bike.step`).
+- Acceptance: **the autopilot completes a lap on all five seeds**; ≥ 99% of steps on-road; peak speed ≥ 80 km/h; overview screenshot shows a smooth, readable loop (owner approves); the start view shows a road leading away, not crossing bands.
+- Do **not** change the off-road penalty or other §11 design numbers. If the autopilot still fails after the track is fixed, report the numbers and propose changes for approval.
+
+### Q2. Shading, contrast and legibility
+
+Research first: flat-shaded low-poly terrain lighting in three.js, per-face colour variation, and atmospheric layering of distant ridges. Then:
+
+- **Terrain facets:** the per-face lit/shade mix only spans a narrow band because slopes are gentle (`terrain.ts` measured t = 0.58–0.66). Widen the ramp (contrast curve around the measured range), add small **seeded per-face lightness/hue jitter** (±6–10%, ESTIMATE; `core/rng` stream, no `Math.random`), and blend dirt vs grass by slope or distance from the road. Facets must be visible in the start view.
+- **Road legibility:** the road must be **lighter than the adjacent ground by roughly the margin in the target** (compare `road_mid` and `ground_left` in your colour table). Soften the wheel-track bands so they read as faint ruts, not stripes. `road_mid` and `road_far` within **±25 per channel** of the sampled target (ESTIMATE).
+- **Hills:** switch from unlit `MeshBasicMaterial` to a lit, flat-shaded material so facets read, and build **2–3 overlapping ridge bands** (nearer darker maroon, farther lighter and pinker through haze). Keep it one draw call (bands as vertex colours). Hill triangles may grow to about 10k (ESTIMATE) if the total stays within budget.
+- **Lighting:** raise lit/shade separation (the hemisphere fill is currently large relative to the sun). Measure **five adjacent lit/shaded facet pairs in Image A** and match their luminance ratio within ±25% (ESTIMATE).
+- Acceptance: updated `compare.py` table (all regions); luminance standard deviation of the near-ground and hill regions within 0.5×–2× of the target (ESTIMATE; a proxy for facet visibility); budgets from the Q0 gate still pass; owner approves the start-view side-by-side.
+
+### Q3. First-person bike and default camera framing
+
+(= old P2, plus the framing decided in owner decision 3.)
+
+- Handlebars (pale, with black grips), fork tubes (brown), red front fender/number plate at bottom centre, from code primitives. `src/game/bike/fpBike.ts`; add `steer` to `InterpolatedPose`. ≤ 2.5k triangles, **one draw call**, vertex colours only, zero per-frame allocation. Bars turn with steer and tilt with lean. No near-plane clipping at any steer or lean.
+- **Framing:** tune the start camera against Image A. Measure the target's horizon row, road vanishing point and the top edge of the handlebars (as fractions of image height) and match each within **±3%** (ESTIMATE). The bike should occupy roughly the lowest third of the frame.
+- Acceptance: the budget gate passes; side-by-side approved by the owner.
+
+### Q4. Start composition: rival, sun and clouds in frame
+
+- Place the rival about **50 m ahead** of the start so it is in frame at the start (ESTIMATE; the target has it mid-distance with a dust puff).
+- Orient the sun so the disc is in the start view near the horizon, **close to centre** (target: roughly x ≈ 0.5, y ≈ 0.27 of the frame; measure it). Derive the sun azimuth from the road's start heading instead of a fixed world angle, so it stays in view for every seed. Place the two clouds in the upper start view.
+- Acceptance: sun disc, both clouds and the rival visible in the start view for seeds 1, 7, 42, 1234 and 2026 (screenshots for each).
+
+### Q5. Props and cast shadows
+
+- Larger trees and boulders close to the road, biased to 8–30 m from it, as in the target; conifers and rounded trees; sensible scale. Keep per-instance triangle caps, instance counts and draw calls within budget (re-check with the Q0 gate). Add small grass tufts only if the budget allows (one draw).
+- Apply the baked prop-shadow discs to the terrain vertex colours (task 20b) so cast shadows show.
+- Acceptance: at least the number of props visible in Image A's foreground and midground appear in the first ~100 m of the start view (count them in Image A; ESTIMATE); no prop on the road; budgets pass; owner approves.
+
+### Q6. Landform: a valley along the road (design note first)
+
+The target road runs through a valley between asymmetric ridges; the current terrain does not. **Before writing any code, deliver a design note (no implementation) and wait for the owner's approval.** Research existing approaches (carving or blending terrain heights toward a road profile using a distance-to-spline field; ridge placement relative to the road). The note must keep `ITerrainSource` unchanged, `heightAt` pure, deterministic and allocation-free (it is called by physics every step, by the meshes and by scatter, so a naive nearest-road search per call is not acceptable; propose a baked distance grid), and say how the deviation check (0.05 m / 0.02 m) is kept. Include the expected effect on the triangle budget.
+
+### Q7. Final verification
+
+Re-run, on all five seeds where relevant: `tsc`, `npm run build`, `npm run size`, the Q0 budget gate, the deviation check, the autopilot lap, the determinism check (`rng-check`), and the full screenshot gate. Report what you could not run.
+
+## 3. Reporting
+
+Use the §6 format of the first prompt, plus: commit hashes per task, the budget-gate output, per-seed results where required, and a research log per task. Do not declare any element "matching"; the owner decides.
